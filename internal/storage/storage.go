@@ -1,4 +1,17 @@
-package main
+package storage
+
+import (
+	"database/sql"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+type Database struct {
+	db *sql.DB
+}
 
 func dbPath() (string, error) {
 	dir := os.Getenv("XDG_DATA_HOME")
@@ -7,7 +20,7 @@ func dbPath() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		dir = filepath.Join("home", ".local", "share")
+		dir = filepath.Join(home, ".local", "share")
 	}
 	dir = filepath.Join(dir, "cronit")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -16,7 +29,7 @@ func dbPath() (string, error) {
 	return filepath.Join(dir, "cronit.db"), nil
 }
 
-schema = `
+const schema = `
 CREATE TABLE IF NOT EXISTS jobs (
     id        TEXT PRIMARY KEY,
     schedule  TEXT NOT NULL,
@@ -37,28 +50,59 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS idx_runs_job ON runs(job_id, started_at DESC);`
 
-func Open() (*sql.DB, error) {
+func Open() (*Database, error) {
+	d := &Database{}
 	path, err := dbPath()
 	if err != nil {
 		return nil, err
 	}
 
 	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)"
-	db, err := sql.Open("sqlite", dsn)
+	d.db, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+
+	d.db.SetMaxOpenConns(1)
+
+	if err := d.db.Ping(); err != nil {
+		d.db.Close()
 		return nil, err
 	}
-	return db, nil
+	if _, err := d.db.Exec(schema); err != nil {
+		d.db.Close()
+		return nil, err
+	}
+	return d, nil
 }
 
-func writeRun(jobID string, ) error {
-	_, err := db.Exec(
+func (d *Database) Close() error {
+	return d.db.Close()
+}
+
+func (d *Database) SaveJob(id, schedule, command string) error {
+	_, err := d.db.Exec(
+		`INSERT INTO jobs (id, schedule, command, enabled, created_at)
+		 VALUES (?, ?, ?, 1, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		     schedule = excluded.schedule,
+		     command  = excluded.command`,
+		id, schedule, command, time.Now().Unix(),
+	)
+	return err
+}
+
+func (d *Database) DeleteJob(id string) error {
+	_, err := d.db.Exec(`DELETE FROM jobs WHERE id = ?`, id)
+	return err
+}
+
+func (d *Database) SaveRun(jobID string, start time.Time, dur time.Duration, exitCode int, stdout, stderr string) error {
+	_, err := d.db.Exec(
 		`INSERT INTO
 		runs(job_id, started_at, duration_ms, exit_code, stdout, stderr)
 		VALUES (?, ?, ?, ?, ?, ?)`,
-		jobID, start.Unix(), dur.Milliseconds(), exitCode, stdout, stderr
+		jobID, start.Unix(), dur.Milliseconds(), exitCode, stdout, stderr,
 	)
+	return err
 }

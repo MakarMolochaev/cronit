@@ -1,0 +1,142 @@
+package schedule
+
+import (
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+type Kind int
+
+const (
+	KindStar Kind = iota
+	KindSingle
+	KindRange
+	KindStep
+)
+
+type Term struct {
+	Kind             Kind
+	Start, End, Step int
+}
+
+type Field struct {
+	Terms  []Term
+	Values []int
+}
+
+var monthNames = map[string]int{
+	"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+	"jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+var weekdayNames = map[string]int{
+	"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6,
+}
+
+func parseField(field string, minVal, maxVal int, names map[string]int) (Field, error) {
+	if field == "" {
+		return Field{}, fmt.Errorf("пустое поле")
+	}
+
+	var terms []Term
+	set := map[int]bool{}
+
+	for _, term := range strings.Split(field, ",") {
+		if term == "" {
+			return Field{}, fmt.Errorf("пустой элемент в %q", field)
+		}
+
+		base := term
+		step := 1
+		hasStep := false
+		if i := strings.IndexByte(term, '/'); i >= 0 {
+			base = term[:i]
+			stepStr := term[i+1:]
+			if base == "" || stepStr == "" {
+				return Field{}, fmt.Errorf("некорректный шаг в %q", term)
+			}
+			s, err := strconv.Atoi(stepStr)
+			if err != nil || s < 1 {
+				return Field{}, fmt.Errorf("шаг должен быть положительным числом в %q", term)
+			}
+			step, hasStep = s, true
+		}
+
+		var lo, hi int
+		isStar := false
+		switch {
+		case base == "*":
+			lo, hi, isStar = minVal, maxVal, true
+
+		case strings.ContainsRune(base, '-'):
+			parts := strings.SplitN(base, "-", 2)
+			var err error
+			if lo, err = parseValue(parts[0], names); err != nil {
+				return Field{}, err
+			}
+			if hi, err = parseValue(parts[1], names); err != nil {
+				return Field{}, err
+			}
+
+		default:
+			v, err := parseValue(base, names)
+			if err != nil {
+				return Field{}, err
+			}
+			lo = v
+			if hasStep {
+				hi = maxVal
+			} else {
+				hi = v
+			}
+		}
+
+		if lo < minVal || hi > maxVal {
+			return Field{}, fmt.Errorf("значение вне диапазона %d-%d в %q", minVal, maxVal, term)
+		}
+		if lo > hi {
+			return Field{}, fmt.Errorf("перевёрнутый диапазон в %q", term)
+		}
+
+		var k Kind
+		switch {
+		case hasStep:
+			k = KindStep
+		case isStar:
+			k = KindStar
+		case lo == hi:
+			k = KindSingle
+		default:
+			k = KindRange
+		}
+		terms = append(terms, Term{Kind: k, Start: lo, End: hi, Step: step})
+
+		for v := lo; v <= hi; v += step {
+			set[v] = true
+		}
+	}
+
+	values := make([]int, 0, len(set))
+	for v := range set {
+		values = append(values, v)
+	}
+	sort.Ints(values)
+
+	return Field{Terms: terms, Values: values}, nil
+}
+
+func parseValue(s string, names map[string]int) (int, error) {
+	s = strings.TrimSpace(s)
+	if names != nil {
+		if v, ok := names[strings.ToLower(s)]; ok {
+			return v, nil
+		}
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("не число и не известное имя: %q", s)
+	}
+	return v, nil
+}
