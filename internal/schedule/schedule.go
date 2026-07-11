@@ -140,3 +140,85 @@ func parseValue(s string, names map[string]int) (int, error) {
 	}
 	return v, nil
 }
+
+type Schedule struct {
+	Minute Field
+	Hour   Field
+	Dom    Field
+	Month  Field
+	Dow    Field
+
+	domRestricted bool
+	dowRestricted bool
+	Reboot        bool
+}
+
+func Parse(expr string) (*Schedule, error) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return nil, fmt.Errorf("пустое выражение")
+	}
+
+	if expr == "@reboot" {
+		return &Schedule{Reboot: true}, nil
+	}
+	switch expr {
+	case "@yearly", "@annually":
+		expr = "0 0 1 1 *"
+	case "@monthly":
+		expr = "0 0 1 * *"
+	case "@weekly":
+		expr = "0 0 * * 0"
+	case "@daily", "@midnight":
+		expr = "0 0 * * *"
+	case "@hourly":
+		expr = "0 * * * *"
+	}
+
+	fields := strings.Fields(expr)
+	if len(fields) != 5 {
+		return nil, fmt.Errorf("ожидалось 5 полей, получено %d", len(fields))
+	}
+
+	var s Schedule
+	var err error
+
+	if s.Minute, err = parseField(fields[0], 0, 59, nil); err != nil {
+		return nil, fmt.Errorf("минуты: %w", err)
+	}
+	if s.Hour, err = parseField(fields[1], 0, 23, nil); err != nil {
+		return nil, fmt.Errorf("часы: %w", err)
+	}
+	if s.Dom, err = parseField(fields[2], 1, 31, nil); err != nil {
+		return nil, fmt.Errorf("день месяца: %w", err)
+	}
+	if s.Month, err = parseField(fields[3], 1, 12, monthNames); err != nil {
+		return nil, fmt.Errorf("месяц: %w", err)
+	}
+	if s.Dow, err = parseField(fields[4], 0, 7, weekdayNames); err != nil {
+		return nil, fmt.Errorf("день недели: %w", err)
+	}
+
+	s.domRestricted = fields[2] != "*"
+	s.dowRestricted = fields[4] != "*"
+
+	normalizeWeekday(&s.Dow)
+
+	return &s, nil
+}
+
+func normalizeWeekday(f *Field) {
+	seen := map[int]bool{}
+	out := make([]int, 0, len(f.Values))
+	for _, v := range f.Values {
+		if v == 7 {
+			v = 0
+		}
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	sort.Ints(out)
+	f.Values = out
+}
