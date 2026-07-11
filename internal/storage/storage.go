@@ -13,6 +13,12 @@ type Database struct {
 	db *sql.DB
 }
 
+type Job struct {
+	ID       string
+	Schedule string
+	Command  string
+}
+
 func dbPath() (string, error) {
 	dir := os.Getenv("XDG_DATA_HOME")
 	if dir == "" {
@@ -90,6 +96,24 @@ func (d *Database) SaveJob(id, schedule, command string) error {
 		id, schedule, command, time.Now().Unix(),
 	)
 	return err
+}
+
+func (d *Database) Jobs() ([]Job, error) {
+	rows, err := d.db.Query(`SELECT id, schedule, command FROM jobs ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []Job
+	for rows.Next() {
+		var j Job
+		if err := rows.Scan(&j.ID, &j.Schedule, &j.Command); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, rows.Err()
 }
 
 func (d *Database) DeleteJob(id string) error {

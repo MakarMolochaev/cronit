@@ -14,6 +14,7 @@ import (
 
 	"github.com/MakarMolochaev/cronit/internal/crontab"
 	"github.com/MakarMolochaev/cronit/internal/storage"
+	"github.com/MakarMolochaev/cronit/internal/tui"
 )
 
 func main() {
@@ -24,6 +25,13 @@ func main() {
 		panic("Failed to open database: " + err.Error())
 	}
 	defer db.Close()
+
+	if len(arguments) == 0 {
+		if err := tui.Run(db); err != nil {
+			panic("tui: " + err.Error())
+		}
+		return
+	}
 
 	switch arguments[0] {
 	case "add":
