@@ -50,8 +50,13 @@ func AddJob(id, schedule, line string) error {
 	if current != "" && !strings.HasSuffix(current, "\n") {
 		b.WriteByte('\n')
 	}
-	b.WriteString(marker + id + "\n")
-	b.WriteString(schedule + " " + line + "\n")
+	b.WriteString(marker)
+	b.WriteString(id)
+	b.WriteString("\n")
+	b.WriteString(schedule)
+	b.WriteString(" ")
+	b.WriteString(line)
+	b.WriteString("\n")
 
 	return Write(b.String())
 }

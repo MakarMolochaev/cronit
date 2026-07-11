@@ -53,7 +53,11 @@ func (m Model) View() tea.View {
 		if i == m.cursor {
 			cursor = "> "
 		}
-		b.WriteString(cursor + job.Schedule + "  " + job.Command + "\n")
+		b.WriteString(cursor)
+		b.WriteString(job.Schedule)
+		b.WriteString("  ")
+		b.WriteString(job.Command)
+		b.WriteString("\n")
 	}
 	b.WriteString("\n↑/↓: выбор · q: выход\n")
 	return tea.NewView(b.String())
