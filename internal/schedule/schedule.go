@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Kind int
@@ -221,4 +222,159 @@ func normalizeWeekday(f *Field) {
 	}
 	sort.Ints(out)
 	f.Values = out
+}
+
+func numName(v int) string { return strconv.Itoa(v) }
+
+var monthRu = [...]string{
+	1: "январь", 2: "февраль", 3: "март", 4: "апрель", 5: "май", 6: "июнь",
+	7: "июль", 8: "август", 9: "сентябрь", 10: "октябрь", 11: "ноябрь", 12: "декабрь",
+}
+
+func monthName(v int) string {
+	if v >= 1 && v <= 12 {
+		return monthRu[v]
+	}
+	return strconv.Itoa(v)
+}
+
+var weekdayRu = [...]string{
+	"воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота",
+}
+
+func weekdayName(v int) string {
+	if v == 7 {
+		v = 0
+	}
+	if v >= 0 && v <= 6 {
+		return weekdayRu[v]
+	}
+	return strconv.Itoa(v)
+}
+
+func joinRu(parts []string) string {
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + " и " + parts[len(parts)-1]
+}
+
+func describeField(f Field, minVal, maxVal int, starPhrase, stepUnit string, name func(int) string) string {
+	var parts []string
+	for _, t := range f.Terms {
+		switch t.Kind {
+		case KindStar:
+			parts = append(parts, starPhrase)
+		case KindSingle:
+			parts = append(parts, name(t.Start))
+		case KindRange:
+			parts = append(parts, "с "+name(t.Start)+" по "+name(t.End))
+		case KindStep:
+			p := fmt.Sprintf("каждые %d %s", t.Step, stepUnit)
+			if t.Start != minVal || t.End != maxVal {
+				p += " (диапазон " + name(t.Start) + "-" + name(t.End) + ")"
+			}
+			parts = append(parts, p)
+		}
+	}
+	return joinRu(parts)
+}
+
+func isStar(f Field) bool {
+	return len(f.Terms) == 1 && f.Terms[0].Kind == KindStar
+}
+
+func (s *Schedule) describeDays() string {
+	switch {
+	case s.domRestricted && s.dowRestricted:
+		dom := describeField(s.Dom, 1, 31, "", "дн", numName)
+		dow := describeField(s.Dow, 0, 7, "", "дн", weekdayName)
+		return "дни: " + dom + " ИЛИ " + dow
+	case s.domRestricted:
+		return "дни месяца: " + describeField(s.Dom, 1, 31, "", "дн", numName)
+	case s.dowRestricted:
+		return "дни недели: " + describeField(s.Dow, 0, 7, "", "дн", weekdayName)
+	default:
+		return "каждый день"
+	}
+}
+
+func (s *Schedule) Describe() string {
+	if s.Reboot {
+		return "при загрузке системы"
+	}
+
+	minutes := describeField(s.Minute, 0, 59, "каждую минуту", "мин", numName)
+	hours := describeField(s.Hour, 0, 23, "каждый час", "ч", numName)
+
+	clauses := []string{
+		"минуты: " + minutes,
+		"часы: " + hours,
+		s.describeDays(),
+	}
+	if !isStar(s.Month) {
+		clauses = append(clauses, "месяцы: "+describeField(s.Month, 1, 12, "каждый месяц", "мес", monthName))
+	}
+	return strings.Join(clauses, "; ")
+}
+
+func contains(vals []int, x int) bool {
+	for _, v := range vals {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Schedule) dayMatches(t time.Time) bool {
+	dom := contains(s.Dom.Values, t.Day())
+	dow := contains(s.Dow.Values, int(t.Weekday()))
+	switch {
+	case s.domRestricted && s.dowRestricted:
+		return dom || dow
+	case s.domRestricted:
+		return dom
+	case s.dowRestricted:
+		return dow
+	default:
+		return true
+	}
+}
+
+func (s *Schedule) Next(after time.Time) time.Time {
+	if s.Reboot {
+		return time.Time{}
+	}
+
+	loc := after.Location()
+	t := time.Date(after.Year(), after.Month(), after.Day(), after.Hour(), after.Minute(), 0, 0, loc).Add(time.Minute)
+	yearLimit := t.Year() + 5
+
+	for {
+		if t.Year() > yearLimit {
+			return time.Time{}
+		}
+
+		if !contains(s.Month.Values, int(t.Month())) {
+			t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, 1, 0)
+			continue
+		}
+		if !s.dayMatches(t) {
+			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
+			continue
+		}
+		if !contains(s.Hour.Values, t.Hour()) {
+			t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, loc).Add(time.Hour)
+			continue
+		}
+		if !contains(s.Minute.Values, t.Minute()) {
+			t = t.Add(time.Minute)
+			continue
+		}
+		return t
+	}
 }
