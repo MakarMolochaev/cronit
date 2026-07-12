@@ -4,11 +4,37 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
 const marker = "# cronit:id="
+
+func DaemonRunning() (running bool, ok bool) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false, false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		data, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+		if err != nil {
+			continue
+		}
+		switch strings.TrimSpace(string(data)) {
+		case "cron", "crond", "cronie", "fcron":
+			return true, true
+		}
+	}
+	return false, true
+}
 
 func Read() (string, error) {
 	cmd := exec.Command("crontab", "-l")

@@ -2,17 +2,15 @@ package main
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/base32"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/MakarMolochaev/cronit/internal/crontab"
+	"github.com/MakarMolochaev/cronit/internal/manager"
 	"github.com/MakarMolochaev/cronit/internal/storage"
 	"github.com/MakarMolochaev/cronit/internal/tui"
 )
@@ -35,21 +33,15 @@ func main() {
 
 	switch arguments[0] {
 	case "add":
-		schedule := arguments[1]
-		command := arguments[2]
-		id := newID()
-		if err := db.SaveJob(id, schedule, command); err != nil {
-			panic("SaveJob: " + err.Error())
-		}
-		self, err := os.Executable()
+		id, err := manager.Add(db, arguments[1], arguments[2])
 		if err != nil {
-			panic("os.Executable: " + err.Error())
-		}
-		line := fmt.Sprintf("%s start %s %q", self, id, command)
-		if err := crontab.AddJob(id, schedule, line); err != nil {
-			panic("crontab.AddJob: " + err.Error())
+			panic("add: " + err.Error())
 		}
 		fmt.Printf("added job %s\n", id)
+		if running, ok := crontab.DaemonRunning(); ok && !running {
+			fmt.Println("⚠ cron daemon is not running — jobs won't fire")
+			fmt.Println("  start it, e.g.: sudo systemctl enable --now cronie")
+		}
 
 	case "start":
 		id := arguments[1]
@@ -75,29 +67,14 @@ func main() {
 			}
 		}
 
-		Stdout := outBuf.String()
-		Stderr := errBuf.String()
-		if err := db.SaveRun(id, startTime, workTime, exitCode, Stdout, Stderr); err != nil {
+		if err := db.SaveRun(id, startTime, workTime, exitCode, outBuf.String(), errBuf.String()); err != nil {
 			panic("SaveRun: " + err.Error())
 		}
+
 	case "rm":
-
-		id := arguments[1]
-		if err := crontab.RemoveJob(id); err != nil {
-			panic("crontab.RemoveJob: " + err.Error())
+		if err := manager.Remove(db, arguments[1]); err != nil {
+			panic("rm: " + err.Error())
 		}
-		if err := db.DeleteJob(id); err != nil {
-			panic("DeleteJob: " + err.Error())
-		}
-		fmt.Printf("removed job %s\n", id)
+		fmt.Printf("removed job %s\n", arguments[1])
 	}
-}
-
-func newID() string {
-	b := make([]byte, 5)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	enc := base32.StdEncoding.WithPadding(base32.NoPadding)
-	return strings.ToLower(enc.EncodeToString(b))
 }

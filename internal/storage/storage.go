@@ -19,6 +19,14 @@ type Job struct {
 	Command  string
 }
 
+type Run struct {
+	StartedAt  time.Time
+	DurationMs int64
+	ExitCode   int
+	Stdout     string
+	Stderr     string
+}
+
 func dbPath() (string, error) {
 	dir := os.Getenv("XDG_DATA_HOME")
 	if dir == "" {
@@ -129,4 +137,28 @@ func (d *Database) SaveRun(jobID string, start time.Time, dur time.Duration, exi
 		jobID, start.Unix(), dur.Milliseconds(), exitCode, stdout, stderr,
 	)
 	return err
+}
+
+func (d *Database) RecentRuns(jobID string, limit int) ([]Run, error) {
+	rows, err := d.db.Query(
+		`SELECT started_at, duration_ms, exit_code, stdout, stderr
+		 FROM runs WHERE job_id = ? ORDER BY started_at DESC LIMIT ?`,
+		jobID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var runs []Run
+	for rows.Next() {
+		var r Run
+		var startedUnix int64
+		if err := rows.Scan(&startedUnix, &r.DurationMs, &r.ExitCode, &r.Stdout, &r.Stderr); err != nil {
+			return nil, err
+		}
+		r.StartedAt = time.Unix(startedUnix, 0)
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
 }
