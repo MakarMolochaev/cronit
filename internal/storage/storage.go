@@ -15,8 +15,10 @@ type Database struct {
 
 type Job struct {
 	ID       string
+	Name     string
 	Schedule string
 	Command  string
+	Enabled  bool
 }
 
 type Run struct {
@@ -51,6 +53,7 @@ func dbPath() (string, error) {
 const schema = `
 CREATE TABLE IF NOT EXISTS jobs (
     id        TEXT PRIMARY KEY,
+    name      TEXT NOT NULL DEFAULT '',
     schedule  TEXT NOT NULL,
     command   TEXT NOT NULL,
     enabled   INTEGER NOT NULL DEFAULT 1,
@@ -98,27 +101,56 @@ func Open() (*Database, error) {
 		d.db.Close()
 		return nil, err
 	}
+	if err := d.ensureColumn("jobs", "name", "name TEXT NOT NULL DEFAULT ''"); err != nil {
+		d.db.Close()
+		return nil, err
+	}
 	return d, nil
+}
+
+func (d *Database) ensureColumn(table, col, ddl string) error {
+	rows, err := d.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == col {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = d.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + ddl)
+	return err
 }
 
 func (d *Database) Close() error {
 	return d.db.Close()
 }
 
-func (d *Database) SaveJob(id, schedule, command string) error {
+func (d *Database) SaveJob(id, name, schedule, command string) error {
 	_, err := d.db.Exec(
-		`INSERT INTO jobs (id, schedule, command, enabled, created_at)
-		 VALUES (?, ?, ?, 1, ?)
+		`INSERT INTO jobs (id, name, schedule, command, enabled, created_at)
+		 VALUES (?, ?, ?, ?, 1, ?)
 		 ON CONFLICT(id) DO UPDATE SET
+		     name     = excluded.name,
 		     schedule = excluded.schedule,
 		     command  = excluded.command`,
-		id, schedule, command, time.Now().Unix(),
+		id, name, schedule, command, time.Now().Unix(),
 	)
 	return err
 }
 
 func (d *Database) Jobs() ([]Job, error) {
-	rows, err := d.db.Query(`SELECT id, schedule, command FROM jobs ORDER BY created_at`)
+	rows, err := d.db.Query(`SELECT id, name, schedule, command, enabled FROM jobs ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -127,12 +159,32 @@ func (d *Database) Jobs() ([]Job, error) {
 	var jobs []Job
 	for rows.Next() {
 		var j Job
-		if err := rows.Scan(&j.ID, &j.Schedule, &j.Command); err != nil {
+		var enabled int
+		if err := rows.Scan(&j.ID, &j.Name, &j.Schedule, &j.Command, &enabled); err != nil {
 			return nil, err
 		}
+		j.Enabled = enabled != 0
 		jobs = append(jobs, j)
 	}
 	return jobs, rows.Err()
+}
+
+func (d *Database) Job(id string) (Job, error) {
+	var j Job
+	var enabled int
+	err := d.db.QueryRow(`SELECT id, name, schedule, command, enabled FROM jobs WHERE id = ?`, id).
+		Scan(&j.ID, &j.Name, &j.Schedule, &j.Command, &enabled)
+	j.Enabled = enabled != 0
+	return j, err
+}
+
+func (d *Database) SetEnabled(id string, enabled bool) error {
+	v := 0
+	if enabled {
+		v = 1
+	}
+	_, err := d.db.Exec(`UPDATE jobs SET enabled = ? WHERE id = ?`, v, id)
+	return err
 }
 
 func (d *Database) DeleteJob(id string) error {
@@ -161,7 +213,7 @@ func (d *Database) SaveTemplate(name, schedule string) error {
 }
 
 func (d *Database) Templates() ([]Template, error) {
-	rows, err := d.db.Query(`SELECT name, schedule FROM templates ORDER BY name`)
+	rows, err := d.db.Query(`SELECT name, schedule FROM templates ORDER BY created_at DESC, rowid DESC`)
 	if err != nil {
 		return nil, err
 	}

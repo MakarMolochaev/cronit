@@ -33,7 +33,7 @@ func main() {
 
 	switch arguments[0] {
 	case "add":
-		id, err := manager.Add(db, arguments[1], arguments[2])
+		id, err := manager.Add(db, "", arguments[1], arguments[2])
 		if err != nil {
 			panic("add: " + err.Error())
 		}

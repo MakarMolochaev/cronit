@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,14 +22,31 @@ const (
 	modeForm
 	modeConfirmDelete
 	modePicker
+	modeBuilder
+	modeRuns
+	modeOutput
 )
+
+const (
+	ctrlFreq = iota
+	ctrlInterval
+	ctrlHour
+	ctrlMinute
+	ctrlDom
+	ctrlDows
+)
+
+var bldFreqNames = []string{"every N minutes", "every N hours", "daily", "weekly", "monthly"}
+
+var dowLetters = [7]string{"Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"}
 
 const pickerMaxRows = 8
 
 type pickItem struct {
-	name   string
-	sched  string
-	custom bool
+	name    string
+	sched   string
+	custom  bool
+	current bool
 }
 
 var builtinPresets = []pickItem{
@@ -78,10 +96,16 @@ type Model struct {
 
 	mode    int
 	editID  string
+	inName  string
 	inSched string
 	inCmd   string
 	inFocus int
 	addErr  string
+
+	runList   []storage.Run
+	runCursor int
+	runOffset int
+	outScroll int
 
 	picker     []pickItem
 	pickCursor int
@@ -89,6 +113,16 @@ type Model struct {
 	pickSaving bool
 	pickName   string
 	pickErr    string
+
+	bldFreq      int
+	bldFocus     int
+	bldInterval  int
+	bldHour      int
+	bldMin       int
+	bldDom       int
+	bldDows      [7]bool
+	bldDowCursor int
+	bldReady     bool
 }
 
 type tickMsg time.Time
@@ -135,7 +169,7 @@ func (m Model) reloadAll() tea.Cmd {
 		}
 		var runs []storage.Run
 		if id != "" {
-			runs, _ = db.RecentRuns(id, 5)
+			runs, _ = db.RecentRuns(id, 3)
 		}
 		running, known := crontab.DaemonRunning()
 		return loadedMsg{jobs: jobs, runs: runs, cronRunning: running, cronKnown: known}
@@ -147,7 +181,7 @@ func (m Model) reloadRuns() tea.Cmd {
 	return func() tea.Msg {
 		var runs []storage.Run
 		if id != "" {
-			runs, _ = db.RecentRuns(id, 5)
+			runs, _ = db.RecentRuns(id, 3)
 		}
 		return runsMsg(runs)
 	}
@@ -209,9 +243,11 @@ func (m Model) visibleRows() int {
 	bottom := 11
 	switch m.mode {
 	case modeForm:
-		bottom = 7
+		bottom = 8
 	case modePicker:
 		bottom = m.pickerRows() + 4
+	case modeBuilder:
+		bottom = 10
 	case modeConfirmDelete:
 		bottom = 2
 	}
@@ -257,6 +293,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleFormKey(msg)
 	case modePicker:
 		return m.handlePickerKey(msg)
+	case modeBuilder:
+		return m.handleBuilderKey(msg)
+	case modeRuns:
+		return m.handleRunsKey(msg)
+	case modeOutput:
+		return m.handleOutputKey(msg)
 	case modeConfirmDelete:
 		switch msg.String() {
 		case "y":
@@ -289,12 +331,24 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case "a":
 			m.mode = modeForm
-			m.editID, m.inSched, m.inCmd, m.inFocus, m.addErr = "", "", "", 0, ""
+			m.editID, m.inName, m.inCmd, m.inSched, m.inFocus, m.addErr = "", manager.RandomName(), "", "", 0, ""
 		case "e":
 			if len(m.jobs) > 0 {
 				j := m.jobs[m.cursor]
 				m.mode = modeForm
-				m.editID, m.inSched, m.inCmd, m.inFocus, m.addErr = j.ID, j.Schedule, j.Command, 0, ""
+				m.editID, m.inName, m.inCmd, m.inSched, m.inFocus, m.addErr = j.ID, j.Name, j.Command, j.Schedule, 0, ""
+			}
+		case " ", "space":
+			if len(m.jobs) > 0 {
+				j := m.jobs[m.cursor]
+				if err := manager.SetEnabled(m.db, j.ID, !j.Enabled); err != nil {
+					m.err = err
+				}
+				return m, m.reloadAll()
+			}
+		case "enter":
+			if len(m.jobs) > 0 {
+				return m.openRuns()
 			}
 		case "d":
 			if len(m.jobs) > 0 {
@@ -303,6 +357,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+}
+
+func (m Model) openRuns() (tea.Model, tea.Cmd) {
+	id := m.selectedID()
+	runs, err := m.db.RecentRuns(id, 50)
+	if err != nil {
+		m.err = err
+		return m, nil
+	}
+	m.runList = runs
+	m.runCursor, m.runOffset, m.outScroll = 0, 0, 0
+	m.mode = modeRuns
+	return m, nil
 }
 
 func (m Model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -314,9 +381,9 @@ func (m Model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		var err error
 		if m.editID == "" {
-			_, err = manager.Add(m.db, strings.TrimSpace(m.inSched), m.inCmd)
+			_, err = manager.Add(m.db, strings.TrimSpace(m.inName), strings.TrimSpace(m.inSched), m.inCmd)
 		} else {
-			err = manager.Update(m.db, m.editID, strings.TrimSpace(m.inSched), m.inCmd)
+			err = manager.Update(m.db, m.editID, strings.TrimSpace(m.inName), strings.TrimSpace(m.inSched), m.inCmd)
 		}
 		if err != nil {
 			m.addErr = err.Error()
@@ -325,33 +392,46 @@ func (m Model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeNormal
 		m.editID = ""
 		return m, m.reloadAll()
-	case "up":
-		m.inFocus = 0
+	case "up", "shift+tab":
+		m.inFocus = (m.inFocus + 2) % 3
 		return m, nil
-	case "down":
-		m.inFocus = 1
-		return m, nil
-	case "tab":
-		m.inFocus = 1 - m.inFocus
+	case "down", "tab":
+		m.inFocus = (m.inFocus + 1) % 3
 		return m, nil
 	case "ctrl+t":
 		return m.openPicker(), nil
+	case "ctrl+b":
+		return m.openBuilder(), nil
 	case "backspace":
-		if m.inFocus == 0 {
-			m.inCmd = trimLastRune(m.inCmd)
-		} else {
-			m.inSched = trimLastRune(m.inSched)
-		}
+		m.setField(trimLastRune(m.field()))
 		return m, nil
 	}
 	if t := msg.Key().Text; t != "" {
-		if m.inFocus == 0 {
-			m.inCmd += t
-		} else {
-			m.inSched += t
-		}
+		m.setField(m.field() + t)
 	}
 	return m, nil
+}
+
+func (m Model) field() string {
+	switch m.inFocus {
+	case 0:
+		return m.inName
+	case 1:
+		return m.inCmd
+	default:
+		return m.inSched
+	}
+}
+
+func (m *Model) setField(v string) {
+	switch m.inFocus {
+	case 0:
+		m.inName = v
+	case 1:
+		m.inCmd = v
+	default:
+		m.inSched = v
+	}
 }
 
 func (m Model) openPicker() Model {
@@ -362,12 +442,16 @@ func (m Model) openPicker() Model {
 }
 
 func (m Model) reloadPicker() Model {
-	items := append([]pickItem(nil), builtinPresets...)
+	var items []pickItem
+	if cur := strings.TrimSpace(m.inSched); cur != "" {
+		items = append(items, pickItem{name: "current", sched: cur, current: true})
+	}
 	if tpls, err := m.db.Templates(); err == nil {
 		for _, t := range tpls {
 			items = append(items, pickItem{name: t.Name, sched: t.Schedule, custom: true})
 		}
 	}
+	items = append(items, builtinPresets...)
 	m.picker = items
 	if m.pickCursor >= len(items) {
 		m.pickCursor = len(items) - 1
@@ -472,6 +556,234 @@ func (m Model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) openBuilder() Model {
+	m.mode = modeBuilder
+	m.bldFocus = 0
+	m.bldDowCursor = 0
+	if !m.bldReady {
+		m.bldFreq = 2
+		m.bldInterval = 5
+		m.bldHour = 9
+		m.bldMin = 0
+		m.bldDom = 1
+		m.bldReady = true
+	}
+	return m
+}
+
+func (m Model) bldControls() []int {
+	switch m.bldFreq {
+	case 0:
+		return []int{ctrlFreq, ctrlInterval}
+	case 1:
+		return []int{ctrlFreq, ctrlInterval, ctrlMinute}
+	case 2:
+		return []int{ctrlFreq, ctrlHour, ctrlMinute}
+	case 3:
+		return []int{ctrlFreq, ctrlHour, ctrlMinute, ctrlDows}
+	case 4:
+		return []int{ctrlFreq, ctrlHour, ctrlMinute, ctrlDom}
+	}
+	return []int{ctrlFreq}
+}
+
+func wrap(v, lo, hi int) int {
+	if v < lo {
+		return hi
+	}
+	if v > hi {
+		return lo
+	}
+	return v
+}
+
+func (m *Model) bldAdjust(ctrl, delta int) {
+	switch ctrl {
+	case ctrlFreq:
+		n := len(bldFreqNames)
+		m.bldFreq = (m.bldFreq + delta + n) % n
+		if c := m.bldControls(); m.bldFocus >= len(c) {
+			m.bldFocus = len(c) - 1
+		}
+	case ctrlInterval:
+		hi := 59
+		if m.bldFreq == 1 {
+			hi = 23
+		}
+		m.bldInterval = wrap(m.bldInterval+delta, 1, hi)
+	case ctrlHour:
+		m.bldHour = wrap(m.bldHour+delta, 0, 23)
+	case ctrlMinute:
+		m.bldMin = wrap(m.bldMin+delta, 0, 59)
+	case ctrlDom:
+		m.bldDom = wrap(m.bldDom+delta, 1, 31)
+	case ctrlDows:
+		m.bldDowCursor = wrap(m.bldDowCursor+delta, 0, 6)
+	}
+}
+
+func (m Model) bldDowField() string {
+	count := 0
+	for _, on := range m.bldDows {
+		if on {
+			count++
+		}
+	}
+	if count == 0 || count == 7 {
+		return "*"
+	}
+	var days []string
+	for i, on := range m.bldDows {
+		if on {
+			days = append(days, strconv.Itoa(i))
+		}
+	}
+	return strings.Join(days, ",")
+}
+
+func (m Model) bldExpr() string {
+	switch m.bldFreq {
+	case 0:
+		if m.bldInterval <= 1 {
+			return "* * * * *"
+		}
+		return fmt.Sprintf("*/%d * * * *", m.bldInterval)
+	case 1:
+		if m.bldInterval <= 1 {
+			return fmt.Sprintf("%d * * * *", m.bldMin)
+		}
+		return fmt.Sprintf("%d */%d * * *", m.bldMin, m.bldInterval)
+	case 2:
+		return fmt.Sprintf("%d %d * * *", m.bldMin, m.bldHour)
+	case 3:
+		return fmt.Sprintf("%d %d * * %s", m.bldMin, m.bldHour, m.bldDowField())
+	case 4:
+		return fmt.Sprintf("%d %d %d * *", m.bldMin, m.bldHour, m.bldDom)
+	}
+	return "* * * * *"
+}
+
+func (m Model) handleBuilderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	controls := m.bldControls()
+	if m.bldFocus >= len(controls) {
+		m.bldFocus = len(controls) - 1
+	}
+	if m.bldFocus < 0 {
+		m.bldFocus = 0
+	}
+	cur := controls[m.bldFocus]
+
+	switch msg.String() {
+	case "esc", "escape":
+		m.mode = modeForm
+	case "enter":
+		m.inSched = m.bldExpr()
+		m.mode = modeForm
+	case "tab", "down":
+		m.bldFocus = (m.bldFocus + 1) % len(controls)
+	case "shift+tab", "up":
+		m.bldFocus = (m.bldFocus - 1 + len(controls)) % len(controls)
+	case "left", "h":
+		m.bldAdjust(cur, -1)
+	case "right", "l":
+		m.bldAdjust(cur, 1)
+	case " ", "space":
+		if cur == ctrlDows {
+			m.bldDows[m.bldDowCursor] = !m.bldDows[m.bldDowCursor]
+		}
+	}
+	return m, nil
+}
+
+func (m Model) runsVisible() int {
+	v := m.height - 6
+	if v < 3 {
+		v = 3
+	}
+	return v
+}
+
+func (m *Model) ensureRunVisible() {
+	vis := m.runsVisible()
+	if m.runCursor < m.runOffset {
+		m.runOffset = m.runCursor
+	}
+	if m.runCursor >= m.runOffset+vis {
+		m.runOffset = m.runCursor - vis + 1
+	}
+	if m.runOffset < 0 {
+		m.runOffset = 0
+	}
+}
+
+func (m Model) currentRun() (storage.Run, bool) {
+	if m.runCursor >= 0 && m.runCursor < len(m.runList) {
+		return m.runList[m.runCursor], true
+	}
+	return storage.Run{}, false
+}
+
+func (m Model) maxOutScroll() int {
+	mx := len(m.outputLines()) - m.runsVisible()
+	if mx < 0 {
+		mx = 0
+	}
+	return mx
+}
+
+func (m Model) handleRunsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "escape", "q":
+		m.mode = modeNormal
+	case "up", "k":
+		if m.runCursor > 0 {
+			m.runCursor--
+			m.ensureRunVisible()
+		}
+	case "down", "j":
+		if m.runCursor < len(m.runList)-1 {
+			m.runCursor++
+			m.ensureRunVisible()
+		}
+	case "enter", "o":
+		if len(m.runList) > 0 {
+			m.outScroll = 0
+			m.mode = modeOutput
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleOutputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if mx := m.maxOutScroll(); m.outScroll > mx {
+		m.outScroll = mx
+	}
+	switch msg.String() {
+	case "esc", "escape", "q":
+		m.mode = modeRuns
+	case "up", "k":
+		if m.outScroll > 0 {
+			m.outScroll--
+		}
+	case "down", "j":
+		if m.outScroll < m.maxOutScroll() {
+			m.outScroll++
+		}
+	case "pgup":
+		m.outScroll -= 10
+		if m.outScroll < 0 {
+			m.outScroll = 0
+		}
+	case "pgdown", "pgdn":
+		m.outScroll = min(m.outScroll+10, m.maxOutScroll())
+	case "home":
+		m.outScroll = 0
+	case "end":
+		m.outScroll = m.maxOutScroll()
+	}
+	return m, nil
+}
+
 func trimLastRune(s string) string {
 	if s == "" {
 		return s
@@ -559,9 +871,11 @@ func (m Model) bottomPanel(panelW, rowW int) string {
 		return labeledPanel(title, m.renderForm(rowW), panelW)
 	case modePicker:
 		return labeledPanel("pick schedule", m.renderPicker(rowW), panelW)
+	case modeBuilder:
+		return labeledPanel("build schedule", m.renderBuilder(rowW), panelW)
 	case modeConfirmDelete:
 		if len(m.jobs) > 0 {
-			body := warnStyle.Render(trunc(fmt.Sprintf("delete %q ?", m.jobs[m.cursor].Command), rowW))
+			body := warnStyle.Render(trunc(fmt.Sprintf("delete %q ?", m.jobs[m.cursor].Name), rowW))
 			return labeledPanel("confirm", body, panelW)
 		}
 		return ""
@@ -571,6 +885,13 @@ func (m Model) bottomPanel(panelW, rowW int) string {
 }
 
 func (m Model) render() string {
+	switch m.mode {
+	case modeRuns:
+		return m.renderRunsScreen()
+	case modeOutput:
+		return m.renderOutputScreen()
+	}
+
 	vis := m.visibleRows()
 
 	if m.sideBySide() {
@@ -592,36 +913,159 @@ func (m Model) render() string {
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
-func (m Model) renderJobList(rowW, vis int) string {
-	if len(m.jobs) == 0 {
-		return faintStyle.Render("no jobs yet — press 'a' to add one")
+func (m Model) runsScreenTitle() string {
+	name := ""
+	if m.cursor >= 0 && m.cursor < len(m.jobs) {
+		name = m.jobs[m.cursor].Name
 	}
-	end := min(m.offset+vis, len(m.jobs))
-	var lines []string
-	for i := m.offset; i < end; i++ {
-		job := m.jobs[i]
-		prefix := "  "
-		if i == m.cursor {
-			prefix = "▸ "
-		}
-		schedCol := fmt.Sprintf("%-14s", trunc(job.Schedule, 14))
-		avail := rowW - 2 - 14 - 4
-		if avail < 12 {
-			avail = 12
-		}
-		descW := avail / 2
-		descCol := trunc(describe(job.Schedule), descW)
-		cmdCol := trunc(job.Command, avail-descW)
+	base := "runs"
+	if name != "" {
+		base = "runs · " + name
+	}
+	vis := m.runsVisible()
+	if len(m.runList) > vis {
+		return fmt.Sprintf("%s [%d-%d/%d]", base, m.runOffset+1, min(m.runOffset+vis, len(m.runList)), len(m.runList))
+	}
+	return base
+}
 
-		if i == m.cursor {
-			plain := prefix + schedCol + "  " + descCol + "  " + cmdCol
+func (m Model) renderRunsList(rowW int) string {
+	if len(m.runList) == 0 {
+		return faintStyle.Render("no runs recorded yet")
+	}
+	vis := m.runsVisible()
+	end := min(m.runOffset+vis, len(m.runList))
+	var lines []string
+	for i := m.runOffset; i < end; i++ {
+		r := m.runList[i]
+		ts := r.StartedAt.Format("2006-01-02 15:04:05")
+		meta := fmt.Sprintf("exit=%d  %dms", r.ExitCode, r.DurationMs)
+		glyph := "✓"
+		if r.ExitCode != 0 {
+			glyph = "✗"
+		}
+		if i == m.runCursor {
+			plain := fmt.Sprintf("▸ %s  %s  %s", glyph, ts, meta)
 			if pad := rowW - lipgloss.Width(plain); pad > 0 {
 				plain += strings.Repeat(" ", pad)
 			}
 			lines = append(lines, selectedRowStyle.Render(plain))
 		} else {
-			line := prefix + schedStyle.Render(schedCol) + "  " + descStyle.Render(descCol) + "  " + cmdCol
-			lines = append(lines, line)
+			cg := okStyle.Render(glyph)
+			if r.ExitCode != 0 {
+				cg = failStyle.Render(glyph)
+			}
+			lines = append(lines, "  "+cg+"  "+ts+"  "+descStyle.Render(meta))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderRunsScreen() string {
+	panelW, _ := m.dims()
+	sections := []string{
+		titleBarStyle.Render("cronit"),
+		labeledPanel(m.runsScreenTitle(), m.renderRunsList(panelW-2), panelW),
+		m.footer(),
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+func splitLines(s string) []string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.TrimRight(s, "\n")
+	var out []string
+	for _, ln := range strings.Split(s, "\n") {
+		out = append(out, "  "+ln)
+	}
+	return out
+}
+
+func (m Model) outputLines() []string {
+	r, ok := m.currentRun()
+	if !ok {
+		return []string{faintStyle.Render("no run selected")}
+	}
+	head := fmt.Sprintf("%s   exit=%d   %dms",
+		r.StartedAt.Format("2006-01-02 15:04:05"), r.ExitCode, r.DurationMs)
+	lines := []string{headerStyle.Render(head), "", headerStyle.Render("stdout")}
+	if strings.TrimSpace(r.Stdout) == "" {
+		lines = append(lines, faintStyle.Render("  (empty)"))
+	} else {
+		lines = append(lines, splitLines(r.Stdout)...)
+	}
+	lines = append(lines, "", headerStyle.Render("stderr"))
+	if strings.TrimSpace(r.Stderr) == "" {
+		lines = append(lines, faintStyle.Render("  (empty)"))
+	} else {
+		lines = append(lines, splitLines(r.Stderr)...)
+	}
+	return lines
+}
+
+func (m Model) renderOutputScreen() string {
+	panelW, rowW := m.dims()
+	all := m.outputLines()
+	vis := m.runsVisible()
+
+	scroll := m.outScroll
+	if mx := m.maxOutScroll(); scroll > mx {
+		scroll = mx
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	end := min(scroll+vis, len(all))
+
+	var body []string
+	for _, ln := range all[scroll:end] {
+		body = append(body, trunc(ln, rowW))
+	}
+	title := "output"
+	if len(all) > vis {
+		title = fmt.Sprintf("output [%d-%d/%d]", scroll+1, end, len(all))
+	}
+	sections := []string{
+		titleBarStyle.Render("cronit"),
+		labeledPanel(title, strings.Join(body, "\n"), panelW),
+		m.footer(),
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+}
+
+func (m Model) renderJobList(rowW, vis int) string {
+	if len(m.jobs) == 0 {
+		return faintStyle.Render("no jobs yet — press 'a' to add one")
+	}
+	end := min(m.offset+vis, len(m.jobs))
+	nameW, schedW := 16, 14
+	var lines []string
+	for i := m.offset; i < end; i++ {
+		job := m.jobs[i]
+		glyph := "●"
+		if !job.Enabled {
+			glyph = "○"
+		}
+		name := fmt.Sprintf("%-*s", nameW, trunc(job.Name, nameW))
+		sched := fmt.Sprintf("%-*s", schedW, trunc(job.Schedule, schedW))
+		avail := rowW - 7 - nameW - schedW
+		if avail < 6 {
+			avail = 6
+		}
+		desc := trunc(describe(job.Schedule), avail)
+
+		if i == m.cursor {
+			plain := fmt.Sprintf("▸ %s %s %s  %s", glyph, name, sched, desc)
+			if pad := rowW - lipgloss.Width(plain); pad > 0 {
+				plain += strings.Repeat(" ", pad)
+			}
+			lines = append(lines, selectedRowStyle.Render(plain))
+		} else {
+			g, nm, sc := okStyle.Render(glyph), name, schedStyle.Render(sched)
+			if !job.Enabled {
+				g, nm, sc = faintStyle.Render(glyph), faintStyle.Render(name), faintStyle.Render(sched)
+			}
+			lines = append(lines, "  "+g+" "+nm+" "+sc+"  "+descStyle.Render(desc))
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -629,26 +1073,32 @@ func (m Model) renderJobList(rowW, vis int) string {
 
 func (m Model) renderForm(rowW int) string {
 	var b strings.Builder
-	cmdVal, schVal := m.inCmd, m.inSched
-	cmdLabel, schLabel := "  command:  ", "  schedule: "
-	if m.inFocus == 0 {
-		cmdLabel = focusStyle.Render("▸ command:  ")
-		cmdVal += cursorStyle.Render(" ")
-	} else {
-		schLabel = focusStyle.Render("▸ schedule: ")
-		schVal += cursorStyle.Render(" ")
+	fields := []struct {
+		label string
+		val   string
+		idx   int
+	}{
+		{"name:     ", m.inName, 0},
+		{"command:  ", m.inCmd, 1},
+		{"schedule: ", m.inSched, 2},
 	}
-	b.WriteString(cmdLabel)
-	b.WriteString(cmdVal)
-	b.WriteString("\n")
-	b.WriteString(schLabel)
-	b.WriteString(schVal)
-	if strings.TrimSpace(m.inSched) != "" {
+	for _, f := range fields {
+		if m.inFocus == f.idx {
+			b.WriteString(focusStyle.Render("▸ " + f.label))
+			b.WriteString(trunc(f.val, rowW-14))
+			b.WriteString(cursorStyle.Render(" "))
+		} else {
+			b.WriteString("  ")
+			b.WriteString(f.label)
+			b.WriteString(trunc(f.val, rowW-14))
+		}
 		b.WriteString("\n")
-		b.WriteString(descStyle.Render(trunc("  → "+describe(m.inSched), rowW)))
 	}
-	b.WriteString("\n")
-	b.WriteString(faintStyle.Render("  ctrl+t: pick / save a schedule"))
+	if strings.TrimSpace(m.inSched) != "" {
+		b.WriteString(descStyle.Render(trunc("  → "+describe(m.inSched), rowW)))
+		b.WriteString("\n")
+	}
+	b.WriteString(faintStyle.Render("  ctrl+t: pick / save · ctrl+b: build a schedule"))
 	if m.addErr != "" {
 		b.WriteString("\n")
 		b.WriteString(errorStyle.Render(trunc("error: "+m.addErr, rowW)))
@@ -680,18 +1130,22 @@ func (m Model) renderPicker(rowW int) string {
 		it := m.picker[i]
 		name := fmt.Sprintf("%-*s", nameW, trunc(it.name, nameW))
 		sched := trunc(it.sched, schedW)
-		if i == m.pickCursor {
+		switch {
+		case i == m.pickCursor:
 			plain := "▸ " + name + "  " + sched
+			if it.current {
+				plain += "  (s: save)"
+			}
 			if pad := rowW - lipgloss.Width(plain); pad > 0 {
 				plain += strings.Repeat(" ", pad)
 			}
 			lines = append(lines, selectedRowStyle.Render(plain))
-		} else {
-			styledName := name
-			if it.custom {
-				styledName = schedStyle.Render(name)
-			}
-			lines = append(lines, "  "+styledName+"  "+descStyle.Render(sched))
+		case it.current:
+			lines = append(lines, "  "+warnStyle.Render(name)+"  "+schedStyle.Render(sched)+faintStyle.Render("  (s: save)"))
+		case it.custom:
+			lines = append(lines, "  "+schedStyle.Render(name)+"  "+descStyle.Render(sched))
+		default:
+			lines = append(lines, "  "+name+"  "+descStyle.Render(sched))
 		}
 	}
 	if m.pickErr != "" {
@@ -700,12 +1154,96 @@ func (m Model) renderPicker(rowW int) string {
 	return strings.Join(lines, "\n")
 }
 
+func bldArrows(focused bool, s string) string {
+	if focused {
+		return focusStyle.Render("‹ ") + s + focusStyle.Render(" ›")
+	}
+	return "  " + s
+}
+
+func (m Model) bldDowsView(focused bool) string {
+	var parts []string
+	for i := 0; i < 7; i++ {
+		s := dowLetters[i]
+		if m.bldDows[i] {
+			s = okStyle.Render(s)
+		} else {
+			s = faintStyle.Render(s)
+		}
+		if focused && i == m.bldDowCursor {
+			s = "[" + s + "]"
+		} else {
+			s = " " + s + " "
+		}
+		parts = append(parts, s)
+	}
+	return strings.Join(parts, "")
+}
+
+func (m Model) bldControlView(c int, focused bool) (string, string) {
+	switch c {
+	case ctrlFreq:
+		return "frequency:", bldArrows(focused, bldFreqNames[m.bldFreq])
+	case ctrlInterval:
+		unit := "min"
+		if m.bldFreq == 1 {
+			unit = "hours"
+		}
+		return "every:", bldArrows(focused, fmt.Sprintf("%d %s", m.bldInterval, unit))
+	case ctrlHour:
+		return "hour:", bldArrows(focused, fmt.Sprintf("%02d", m.bldHour))
+	case ctrlMinute:
+		return "minute:", bldArrows(focused, fmt.Sprintf("%02d", m.bldMin))
+	case ctrlDom:
+		return "day:", bldArrows(focused, strconv.Itoa(m.bldDom))
+	case ctrlDows:
+		return "weekday(s):", m.bldDowsView(focused)
+	}
+	return "", ""
+}
+
+func (m Model) renderBuilder(rowW int) string {
+	var b strings.Builder
+	controls := m.bldControls()
+	for i, c := range controls {
+		focused := i == m.bldFocus
+		label, val := m.bldControlView(c, focused)
+		marker := "  "
+		lbl := fmt.Sprintf("%-12s", label)
+		if focused {
+			marker = focusStyle.Render("▸ ")
+			lbl = focusStyle.Render(lbl)
+		}
+		b.WriteString(marker)
+		b.WriteString(lbl)
+		b.WriteString(" ")
+		b.WriteString(val)
+		b.WriteString("\n")
+	}
+	expr := m.bldExpr()
+	b.WriteString("\n")
+	b.WriteString(schedStyle.Render(trunc("  → "+expr, rowW)))
+	b.WriteString("\n")
+	b.WriteString(descStyle.Render(trunc("  → "+describe(expr), rowW)))
+	return b.String()
+}
+
 func (m Model) renderDetails(rowW int) string {
 	if len(m.jobs) == 0 {
 		return faintStyle.Render("—")
 	}
 	job := m.jobs[m.cursor]
 	var b strings.Builder
+	status := okStyle.Render("● enabled")
+	if !job.Enabled {
+		status = faintStyle.Render("○ paused")
+	}
+	b.WriteString(headerStyle.Render(trunc(job.Name, rowW-12)))
+	b.WriteString("  ")
+	b.WriteString(status)
+	b.WriteString("\n")
+	b.WriteString(descStyle.Render(trunc("$ "+job.Command, rowW)))
+	b.WriteString("\n")
 	b.WriteString(schedStyle.Render(job.Schedule))
 	b.WriteString("  ")
 	b.WriteString(descStyle.Render(describe(job.Schedule)))
@@ -772,16 +1310,22 @@ func (m Model) footer() string {
 func (m Model) footerHints() (full, compact string) {
 	switch m.mode {
 	case modeForm:
-		return "tab: switch field · ctrl+t: schedules · enter: save · esc: cancel", "tab · ctrl+t sched · enter save · esc"
+		return "tab: field · ctrl+t: schedules · ctrl+b: build · enter: save · esc: cancel", "tab · ctrl+t pick · ctrl+b build · enter save"
+	case modeBuilder:
+		return "tab: next field · ←/→: change · space: toggle day · enter: use · esc: back", "tab · ←/→ change · space day · enter use"
 	case modePicker:
 		if m.pickSaving {
 			return "type a name · enter: save · esc: cancel", "enter save · esc"
 		}
 		return "↑/↓: move · enter: use · s: save current · d: delete template · esc: back", "↑/↓ · enter use · s save · d del · esc"
+	case modeRuns:
+		return "↑/↓: select · enter: view output · esc: back", "↑/↓ · enter view · esc back"
+	case modeOutput:
+		return "↑/↓: scroll · pgup/pgdn · esc: back", "↑/↓ scroll · esc back"
 	case modeConfirmDelete:
 		return "y: delete · n: cancel", "y: delete · n: cancel"
 	default:
-		return "↑/↓: select · a: add · e: edit · d: delete · q: quit", "↑/↓ · a add · e edit · d del · q quit"
+		return "↑/↓: select · a: add · e: edit · space: pause · enter: logs · d: delete · q: quit", "↑/↓ · a add · e edit · space pause · enter logs · d del · q quit"
 	}
 }
 
