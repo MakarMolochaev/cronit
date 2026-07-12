@@ -27,6 +27,11 @@ type Run struct {
 	Stderr     string
 }
 
+type Template struct {
+	Name     string
+	Schedule string
+}
+
 func dbPath() (string, error) {
 	dir := os.Getenv("XDG_DATA_HOME")
 	if dir == "" {
@@ -62,7 +67,13 @@ CREATE TABLE IF NOT EXISTS runs (
     stderr      TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_runs_job ON runs(job_id, started_at DESC);`
+CREATE INDEX IF NOT EXISTS idx_runs_job ON runs(job_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS templates (
+    name       TEXT PRIMARY KEY,
+    schedule   TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);`
 
 func Open() (*Database, error) {
 	d := &Database{}
@@ -136,6 +147,39 @@ func (d *Database) SaveRun(jobID string, start time.Time, dur time.Duration, exi
 		VALUES (?, ?, ?, ?, ?, ?)`,
 		jobID, start.Unix(), dur.Milliseconds(), exitCode, stdout, stderr,
 	)
+	return err
+}
+
+func (d *Database) SaveTemplate(name, schedule string) error {
+	_, err := d.db.Exec(
+		`INSERT INTO templates (name, schedule, created_at)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET schedule = excluded.schedule`,
+		name, schedule, time.Now().Unix(),
+	)
+	return err
+}
+
+func (d *Database) Templates() ([]Template, error) {
+	rows, err := d.db.Query(`SELECT name, schedule FROM templates ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var templates []Template
+	for rows.Next() {
+		var t Template
+		if err := rows.Scan(&t.Name, &t.Schedule); err != nil {
+			return nil, err
+		}
+		templates = append(templates, t)
+	}
+	return templates, rows.Err()
+}
+
+func (d *Database) DeleteTemplate(name string) error {
+	_, err := d.db.Exec(`DELETE FROM templates WHERE name = ?`, name)
 	return err
 }
 

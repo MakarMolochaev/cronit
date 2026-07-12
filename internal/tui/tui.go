@@ -20,7 +20,29 @@ const (
 	modeNormal = iota
 	modeForm
 	modeConfirmDelete
+	modePicker
 )
+
+const pickerMaxRows = 8
+
+type pickItem struct {
+	name   string
+	sched  string
+	custom bool
+}
+
+var builtinPresets = []pickItem{
+	{name: "every minute", sched: "* * * * *"},
+	{name: "every 5 minutes", sched: "*/5 * * * *"},
+	{name: "every 15 minutes", sched: "*/15 * * * *"},
+	{name: "every 30 minutes", sched: "*/30 * * * *"},
+	{name: "hourly", sched: "0 * * * *"},
+	{name: "daily at 00:00", sched: "0 0 * * *"},
+	{name: "daily at 09:00", sched: "0 9 * * *"},
+	{name: "weekdays at 09:00", sched: "0 9 * * 1-5"},
+	{name: "weekly (Mon 09:00)", sched: "0 9 * * 1"},
+	{name: "monthly (1st 00:00)", sched: "0 0 1 * *"},
+}
 
 var (
 	titleBarStyle = lipgloss.NewStyle().Bold(true).
@@ -60,6 +82,13 @@ type Model struct {
 	inCmd   string
 	inFocus int
 	addErr  string
+
+	picker     []pickItem
+	pickCursor int
+	pickOffset int
+	pickSaving bool
+	pickName   string
+	pickErr    string
 }
 
 type tickMsg time.Time
@@ -163,8 +192,9 @@ func (m Model) visibleRows() int {
 	if h <= 0 {
 		h = 24
 	}
+	extraFooter := lipgloss.Height(m.footer()) - 1
 	if m.sideBySide() {
-		vis := h - 5
+		vis := h - 5 - extraFooter
 		if m.cronKnown && !m.cronRunning {
 			vis--
 		}
@@ -179,11 +209,13 @@ func (m Model) visibleRows() int {
 	bottom := 11
 	switch m.mode {
 	case modeForm:
-		bottom = 5
+		bottom = 7
+	case modePicker:
+		bottom = m.pickerRows() + 4
 	case modeConfirmDelete:
 		bottom = 2
 	}
-	vis := h - (8 + bottom)
+	vis := h - (8 + bottom) - extraFooter
 	if vis < 3 {
 		vis = 3
 	}
@@ -223,6 +255,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeForm:
 		return m.handleFormKey(msg)
+	case modePicker:
+		return m.handlePickerKey(msg)
 	case modeConfirmDelete:
 		switch msg.String() {
 		case "y":
@@ -300,6 +334,8 @@ func (m Model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.inFocus = 1 - m.inFocus
 		return m, nil
+	case "ctrl+t":
+		return m.openPicker(), nil
 	case "backspace":
 		if m.inFocus == 0 {
 			m.inCmd = trimLastRune(m.inCmd)
@@ -313,6 +349,124 @@ func (m Model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inCmd += t
 		} else {
 			m.inSched += t
+		}
+	}
+	return m, nil
+}
+
+func (m Model) openPicker() Model {
+	m.mode = modePicker
+	m.pickCursor, m.pickOffset = 0, 0
+	m.pickSaving, m.pickName, m.pickErr = false, "", ""
+	return m.reloadPicker()
+}
+
+func (m Model) reloadPicker() Model {
+	items := append([]pickItem(nil), builtinPresets...)
+	if tpls, err := m.db.Templates(); err == nil {
+		for _, t := range tpls {
+			items = append(items, pickItem{name: t.Name, sched: t.Schedule, custom: true})
+		}
+	}
+	m.picker = items
+	if m.pickCursor >= len(items) {
+		m.pickCursor = len(items) - 1
+	}
+	if m.pickCursor < 0 {
+		m.pickCursor = 0
+	}
+	m.ensurePickVisible()
+	return m
+}
+
+func (m Model) pickerRows() int {
+	n := len(m.picker)
+	if n > pickerMaxRows {
+		n = pickerMaxRows
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+func (m *Model) ensurePickVisible() {
+	vis := m.pickerRows()
+	if m.pickCursor < m.pickOffset {
+		m.pickOffset = m.pickCursor
+	}
+	if m.pickCursor >= m.pickOffset+vis {
+		m.pickOffset = m.pickCursor - vis + 1
+	}
+	if m.pickOffset < 0 {
+		m.pickOffset = 0
+	}
+}
+
+func (m Model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.pickSaving {
+		switch msg.String() {
+		case "esc", "escape":
+			m.pickSaving, m.pickErr = false, ""
+			return m, nil
+		case "enter":
+			name := strings.TrimSpace(m.pickName)
+			if name == "" {
+				m.pickErr = "name required"
+				return m, nil
+			}
+			sched := strings.TrimSpace(m.inSched)
+			if _, err := schedule.Parse(sched); err != nil {
+				m.pickErr = "invalid schedule: " + err.Error()
+				return m, nil
+			}
+			if err := m.db.SaveTemplate(name, sched); err != nil {
+				m.pickErr = err.Error()
+				return m, nil
+			}
+			m.pickSaving, m.pickName, m.pickErr = false, "", ""
+			return m.reloadPicker(), nil
+		case "backspace":
+			m.pickName = trimLastRune(m.pickName)
+			return m, nil
+		}
+		if t := msg.Key().Text; t != "" {
+			m.pickName += t
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "esc", "escape":
+		m.mode = modeForm
+	case "enter":
+		if m.pickCursor >= 0 && m.pickCursor < len(m.picker) {
+			m.inSched = m.picker[m.pickCursor].sched
+		}
+		m.mode = modeForm
+	case "up", "k":
+		if m.pickCursor > 0 {
+			m.pickCursor--
+			m.ensurePickVisible()
+		}
+	case "down", "j":
+		if m.pickCursor < len(m.picker)-1 {
+			m.pickCursor++
+			m.ensurePickVisible()
+		}
+	case "s":
+		if strings.TrimSpace(m.inSched) == "" {
+			m.pickErr = "schedule field is empty — type one first"
+			return m, nil
+		}
+		m.pickSaving, m.pickName, m.pickErr = true, "", ""
+	case "d":
+		if m.pickCursor >= 0 && m.pickCursor < len(m.picker) && m.picker[m.pickCursor].custom {
+			if err := m.db.DeleteTemplate(m.picker[m.pickCursor].name); err != nil {
+				m.pickErr = err.Error()
+				return m, nil
+			}
+			return m.reloadPicker(), nil
 		}
 	}
 	return m, nil
@@ -403,6 +557,8 @@ func (m Model) bottomPanel(panelW, rowW int) string {
 			title = "edit job"
 		}
 		return labeledPanel(title, m.renderForm(rowW), panelW)
+	case modePicker:
+		return labeledPanel("pick schedule", m.renderPicker(rowW), panelW)
 	case modeConfirmDelete:
 		if len(m.jobs) > 0 {
 			body := warnStyle.Render(trunc(fmt.Sprintf("delete %q ?", m.jobs[m.cursor].Command), rowW))
@@ -491,11 +647,57 @@ func (m Model) renderForm(rowW int) string {
 		b.WriteString("\n")
 		b.WriteString(descStyle.Render(trunc("  → "+describe(m.inSched), rowW)))
 	}
+	b.WriteString("\n")
+	b.WriteString(faintStyle.Render("  ctrl+t: pick / save a schedule"))
 	if m.addErr != "" {
 		b.WriteString("\n")
 		b.WriteString(errorStyle.Render(trunc("error: "+m.addErr, rowW)))
 	}
 	return b.String()
+}
+
+func (m Model) renderPicker(rowW int) string {
+	var lines []string
+	if m.pickSaving {
+		lines = append(lines, focusStyle.Render("save as: ")+m.pickName+cursorStyle.Render(" "))
+		lines = append(lines, descStyle.Render(trunc("  "+strings.TrimSpace(m.inSched)+"  →  "+describe(m.inSched), rowW)))
+		if m.pickErr != "" {
+			lines = append(lines, errorStyle.Render(trunc("error: "+m.pickErr, rowW)))
+		}
+		return strings.Join(lines, "\n")
+	}
+	if len(m.picker) == 0 {
+		return faintStyle.Render("no schedules")
+	}
+	vis := m.pickerRows()
+	end := min(m.pickOffset+vis, len(m.picker))
+	nameW := 22
+	schedW := rowW - 2 - nameW - 2
+	if schedW < 10 {
+		schedW = 10
+	}
+	for i := m.pickOffset; i < end; i++ {
+		it := m.picker[i]
+		name := fmt.Sprintf("%-*s", nameW, trunc(it.name, nameW))
+		sched := trunc(it.sched, schedW)
+		if i == m.pickCursor {
+			plain := "▸ " + name + "  " + sched
+			if pad := rowW - lipgloss.Width(plain); pad > 0 {
+				plain += strings.Repeat(" ", pad)
+			}
+			lines = append(lines, selectedRowStyle.Render(plain))
+		} else {
+			styledName := name
+			if it.custom {
+				styledName = schedStyle.Render(name)
+			}
+			lines = append(lines, "  "+styledName+"  "+descStyle.Render(sched))
+		}
+	}
+	if m.pickErr != "" {
+		lines = append(lines, errorStyle.Render(trunc("error: "+m.pickErr, rowW)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderDetails(rowW int) string {
@@ -554,17 +756,28 @@ func (m Model) footer() string {
 	if w <= 0 {
 		w = 80
 	}
-	hint := full
-	if lipgloss.Width(full) > w {
-		hint = compact
+	if lipgloss.Width(full) <= w {
+		return faintStyle.Render(full)
 	}
-	return faintStyle.Render(trunc(hint, w))
+	if lipgloss.Width(compact) <= w {
+		return faintStyle.Render(compact)
+	}
+	parts := strings.Split(compact, " · ")
+	for i, p := range parts {
+		parts[i] = faintStyle.Render(trunc(p, w))
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (m Model) footerHints() (full, compact string) {
 	switch m.mode {
 	case modeForm:
-		return "↑/↓/tab: switch field · enter: save · esc: cancel", "tab: field · enter: save · esc: cancel"
+		return "tab: switch field · ctrl+t: schedules · enter: save · esc: cancel", "tab · ctrl+t sched · enter save · esc"
+	case modePicker:
+		if m.pickSaving {
+			return "type a name · enter: save · esc: cancel", "enter save · esc"
+		}
+		return "↑/↓: move · enter: use · s: save current · d: delete template · esc: back", "↑/↓ · enter use · s save · d del · esc"
 	case modeConfirmDelete:
 		return "y: delete · n: cancel", "y: delete · n: cancel"
 	default:
