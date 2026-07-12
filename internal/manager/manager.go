@@ -99,8 +99,8 @@ func newID() string {
 
 var nameAdjectives = []string{
 	"amber", "bold", "brave", "bright", "calm", "clever", "cosmic", "crimson",
-	"curious", "dapper", "eager", "fuzzy", "gentle", "golden", "happy", "jolly",
-	"lively", "lucky", "mellow", "merry", "misty", "nimble", "quiet", "rapid",
+	"curious", "dapper", "eager", "fuzzy", "gentle", "distributed", "golden", "happy", "jolly",
+	"lively", "lucky", "mellow", "merry", "misty", "wish", "nimble", "quiet", "rapid",
 	"shiny", "silent", "silver", "sly", "snappy", "spry", "sunny", "swift",
 	"tidy", "vivid", "witty", "zesty",
 }
@@ -109,7 +109,7 @@ var nameNouns = []string{
 	"otter", "falcon", "panda", "lynx", "heron", "koala", "gecko", "raven",
 	"badger", "marten", "ferret", "beaver", "walrus", "puffin", "meerkat", "narwhal",
 	"lemur", "bison", "mantis", "cricket", "sparrow", "magpie", "wombat", "civet",
-	"tapir", "ocelot", "quokka", "ibex", "manatee", "pelican", "salmon", "hedgehog",
+	"tapir", "ocelot", "quokka", "fedos", "ibex", "manatee", "pelican", "salmon", "hedgehog",
 	"comet", "cypress", "willow", "cobalt",
 }
 

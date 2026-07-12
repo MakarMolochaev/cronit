@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/MakarMolochaev/cronit/internal/banner"
 	"github.com/MakarMolochaev/cronit/internal/crontab"
 	"github.com/MakarMolochaev/cronit/internal/manager"
 	"github.com/MakarMolochaev/cronit/internal/schedule"
@@ -62,28 +63,9 @@ var builtinPresets = []pickItem{
 	{name: "monthly (1st 00:00)", sched: "0 0 1 * *"},
 }
 
-var (
-	titleBarStyle = lipgloss.NewStyle().Bold(true).
-			Foreground(lipgloss.Color("231")).Background(lipgloss.Color("63")).Padding(0, 1)
-	panelStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-	panelTitleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
-	selectedRowStyle = lipgloss.NewStyle().Bold(true).
-				Foreground(lipgloss.Color("231")).Background(lipgloss.Color("62"))
-	schedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
-	descStyle   = lipgloss.NewStyle().Faint(true)
-	warnStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-	errorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("111"))
-	okStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	failStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	faintStyle  = lipgloss.NewStyle().Faint(true)
-	focusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
-	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("231"))
-)
-
 type Model struct {
 	db          *storage.Database
+	version     string
 	jobs        []storage.Job
 	runs        []storage.Run
 	cursor      int
@@ -138,8 +120,8 @@ type runsMsg []storage.Run
 
 type errMsg struct{ err error }
 
-func Run(db *storage.Database) error {
-	_, err := tea.NewProgram(Model{db: db}).Run()
+func Run(db *storage.Database, version string) error {
+	_, err := tea.NewProgram(Model{db: db, version: version}).Run()
 	return err
 }
 
@@ -816,15 +798,26 @@ func (m Model) dims() (panelW, rowW int) {
 	return
 }
 
-func labeledPanel(title, body string, w int) string {
-	return panelTitleStyle.Render(title) + "\n" + panelStyle.Width(w).Render(body)
+func labeledPanel(title, body string, w int, focused bool) string {
+	ts, ps := panelTitleStyle, panelStyle
+	if focused {
+		ts, ps = panelTitleFocusStyle, panelFocusStyle
+	}
+	return ts.Render(title) + "\n" + ps.Width(w).Render(body)
+}
+
+func selRow(inner string, rowW int) string {
+	if pad := rowW - 2 - lipgloss.Width(inner); pad > 0 {
+		inner += strings.Repeat(" ", pad)
+	}
+	return barStyle.Render("▎ ") + selectedRowStyle.Render(inner)
 }
 
 func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
 	v.AltScreen = true
-	v.BackgroundColor = lipgloss.Color("235")
-	v.ForegroundColor = lipgloss.Color("252")
+	v.BackgroundColor = appBg
+	v.ForegroundColor = appFg
 	return v
 }
 
@@ -850,8 +843,35 @@ func (m Model) jobsTitle(vis int) string {
 	return "jobs"
 }
 
+func (m Model) header(width int) string {
+	hb := lipgloss.NewStyle().Background(headerBg)
+	left := hb.Foreground(accent2).Bold(true).Render(" cronit")
+	right := m.headerMeta(hb)
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + hb.Render(strings.Repeat(" ", gap)) + right
+}
+
+func (m Model) headerMeta(hb lipgloss.Style) string {
+	sep := hb.Foreground(fgMuted).Render(" · ")
+	parts := []string{hb.Foreground(fgMuted).Render(fmt.Sprintf("%d jobs", len(m.jobs)))}
+	if m.cronKnown {
+		if m.cronRunning {
+			parts = append(parts, hb.Foreground(success).Render("● cron"))
+		} else {
+			parts = append(parts, hb.Foreground(warnClr).Render("● cron off"))
+		}
+	}
+	if m.version != "" {
+		parts = append(parts, hb.Foreground(fgMuted).Render(m.version))
+	}
+	return strings.Join(parts, sep) + hb.Render(" ")
+}
+
 func (m Model) topSections(width int) []string {
-	sections := []string{titleBarStyle.Render("cronit")}
+	sections := []string{m.header(width)}
 	if m.cronKnown && !m.cronRunning {
 		sections = append(sections, warnStyle.Render(trunc("⚠ cron daemon not running — jobs won't fire (sudo systemctl enable --now cronie)", width)))
 	}
@@ -868,19 +888,19 @@ func (m Model) bottomPanel(panelW, rowW int) string {
 		if m.editID != "" {
 			title = "edit job"
 		}
-		return labeledPanel(title, m.renderForm(rowW), panelW)
+		return labeledPanel(title, m.renderForm(rowW), panelW, true)
 	case modePicker:
-		return labeledPanel("pick schedule", m.renderPicker(rowW), panelW)
+		return labeledPanel("pick schedule", m.renderPicker(rowW), panelW, true)
 	case modeBuilder:
-		return labeledPanel("build schedule", m.renderBuilder(rowW), panelW)
+		return labeledPanel("build schedule", m.renderBuilder(rowW), panelW, true)
 	case modeConfirmDelete:
 		if len(m.jobs) > 0 {
 			body := warnStyle.Render(trunc(fmt.Sprintf("delete %q ?", m.jobs[m.cursor].Name), rowW))
-			return labeledPanel("confirm", body, panelW)
+			return labeledPanel("confirm", body, panelW, true)
 		}
 		return ""
 	default:
-		return labeledPanel("details", m.renderDetails(rowW), panelW)
+		return labeledPanel("details", m.renderDetails(rowW), panelW, false)
 	}
 }
 
@@ -896,8 +916,8 @@ func (m Model) render() string {
 
 	if m.sideBySide() {
 		leftCW, rightCW := m.splitWidths()
-		left := labeledPanel(m.jobsTitle(vis), m.renderJobList(leftCW-2, vis), leftCW)
-		right := labeledPanel("details", m.renderDetails(rightCW-2), rightCW)
+		left := labeledPanel(m.jobsTitle(vis), m.renderJobList(leftCW-2, vis), leftCW, true)
+		right := labeledPanel("details", m.renderDetails(rightCW-2), rightCW, false)
 		body := lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 		out := append(m.topSections(m.width), body, m.footer())
 		return lipgloss.JoinVertical(lipgloss.Left, out...)
@@ -905,7 +925,7 @@ func (m Model) render() string {
 
 	panelW, rowW := m.dims()
 	sections := m.topSections(panelW + 2)
-	sections = append(sections, labeledPanel(m.jobsTitle(vis), m.renderJobList(rowW, vis), panelW))
+	sections = append(sections, labeledPanel(m.jobsTitle(vis), m.renderJobList(rowW, vis), panelW, m.mode == modeNormal))
 	if bp := m.bottomPanel(panelW, rowW); bp != "" {
 		sections = append(sections, bp)
 	}
@@ -945,11 +965,7 @@ func (m Model) renderRunsList(rowW int) string {
 			glyph = "✗"
 		}
 		if i == m.runCursor {
-			plain := fmt.Sprintf("▸ %s  %s  %s", glyph, ts, meta)
-			if pad := rowW - lipgloss.Width(plain); pad > 0 {
-				plain += strings.Repeat(" ", pad)
-			}
-			lines = append(lines, selectedRowStyle.Render(plain))
+			lines = append(lines, selRow(fmt.Sprintf("%s  %s  %s", glyph, ts, meta), rowW))
 		} else {
 			cg := okStyle.Render(glyph)
 			if r.ExitCode != 0 {
@@ -964,8 +980,8 @@ func (m Model) renderRunsList(rowW int) string {
 func (m Model) renderRunsScreen() string {
 	panelW, _ := m.dims()
 	sections := []string{
-		titleBarStyle.Render("cronit"),
-		labeledPanel(m.runsScreenTitle(), m.renderRunsList(panelW-2), panelW),
+		m.header(panelW + 2),
+		labeledPanel(m.runsScreenTitle(), m.renderRunsList(panelW-2), panelW, true),
 		m.footer(),
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
@@ -1026,16 +1042,25 @@ func (m Model) renderOutputScreen() string {
 		title = fmt.Sprintf("output [%d-%d/%d]", scroll+1, end, len(all))
 	}
 	sections := []string{
-		titleBarStyle.Render("cronit"),
-		labeledPanel(title, strings.Join(body, "\n"), panelW),
+		m.header(panelW + 2),
+		labeledPanel(title, strings.Join(body, "\n"), panelW, true),
 		m.footer(),
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
+func (m Model) emptyState(rowW, vis int) string {
+	hint := faintStyle.Render(trunc("press 'a' to add your first job", rowW))
+	if rowW < lipgloss.Width(banner.Art) {
+		return lipgloss.Place(rowW, vis, lipgloss.Center, lipgloss.Center, hint)
+	}
+	content := lipgloss.JoinVertical(lipgloss.Center, banner.Render(), "", hint)
+	return lipgloss.Place(rowW, vis, lipgloss.Center, lipgloss.Center, content)
+}
+
 func (m Model) renderJobList(rowW, vis int) string {
 	if len(m.jobs) == 0 {
-		return faintStyle.Render("no jobs yet — press 'a' to add one")
+		return m.emptyState(rowW, vis)
 	}
 	end := min(m.offset+vis, len(m.jobs))
 	nameW, schedW := 16, 14
@@ -1055,11 +1080,7 @@ func (m Model) renderJobList(rowW, vis int) string {
 		desc := trunc(describe(job.Schedule), avail)
 
 		if i == m.cursor {
-			plain := fmt.Sprintf("▸ %s %s %s  %s", glyph, name, sched, desc)
-			if pad := rowW - lipgloss.Width(plain); pad > 0 {
-				plain += strings.Repeat(" ", pad)
-			}
-			lines = append(lines, selectedRowStyle.Render(plain))
+			lines = append(lines, selRow(fmt.Sprintf("%s %s %s  %s", glyph, name, sched, desc), rowW))
 		} else {
 			g, nm, sc := okStyle.Render(glyph), name, schedStyle.Render(sched)
 			if !job.Enabled {
@@ -1132,14 +1153,11 @@ func (m Model) renderPicker(rowW int) string {
 		sched := trunc(it.sched, schedW)
 		switch {
 		case i == m.pickCursor:
-			plain := "▸ " + name + "  " + sched
+			inner := name + "  " + sched
 			if it.current {
-				plain += "  (s: save)"
+				inner += "  (s: save)"
 			}
-			if pad := rowW - lipgloss.Width(plain); pad > 0 {
-				plain += strings.Repeat(" ", pad)
-			}
-			lines = append(lines, selectedRowStyle.Render(plain))
+			lines = append(lines, selRow(inner, rowW))
 		case it.current:
 			lines = append(lines, "  "+warnStyle.Render(name)+"  "+schedStyle.Render(sched)+faintStyle.Render("  (s: save)"))
 		case it.custom:
@@ -1288,45 +1306,58 @@ func (m Model) renderDetails(rowW int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+type keyHint struct{ key, label string }
+
+func (m Model) footerKeys() []keyHint {
+	switch m.mode {
+	case modeForm:
+		return []keyHint{{"tab", "field"}, {"^t", "schedules"}, {"^b", "build"}, {"enter", "save"}, {"esc", "cancel"}}
+	case modeBuilder:
+		return []keyHint{{"tab", "field"}, {"←/→", "change"}, {"spc", "toggle"}, {"enter", "use"}, {"esc", "back"}}
+	case modePicker:
+		if m.pickSaving {
+			return []keyHint{{"enter", "save"}, {"esc", "cancel"}}
+		}
+		return []keyHint{{"↑/↓", "move"}, {"enter", "use"}, {"s", "save"}, {"d", "delete"}, {"esc", "back"}}
+	case modeRuns:
+		return []keyHint{{"↑/↓", "select"}, {"enter", "output"}, {"esc", "back"}}
+	case modeOutput:
+		return []keyHint{{"↑/↓", "scroll"}, {"pgup/dn", "page"}, {"esc", "back"}}
+	case modeConfirmDelete:
+		return []keyHint{{"y", "delete"}, {"n", "cancel"}}
+	default:
+		return []keyHint{{"↑/↓", "select"}, {"a", "add"}, {"e", "edit"}, {"spc", "pause"}, {"enter", "logs"}, {"d", "delete"}, {"q", "quit"}}
+	}
+}
+
+func renderChip(h keyHint) string {
+	return chipStyle.Render(" "+h.key+" ") + " " + chipLabelStyle.Render(h.label)
+}
+
 func (m Model) footer() string {
-	full, compact := m.footerHints()
+	keys := m.footerKeys()
 	w := m.width
 	if w <= 0 {
 		w = 80
 	}
-	if lipgloss.Width(full) <= w {
-		return faintStyle.Render(full)
-	}
-	if lipgloss.Width(compact) <= w {
-		return faintStyle.Render(compact)
-	}
-	parts := strings.Split(compact, " · ")
-	for i, p := range parts {
-		parts[i] = faintStyle.Render(trunc(p, w))
-	}
-	return strings.Join(parts, "\n")
-}
 
-func (m Model) footerHints() (full, compact string) {
-	switch m.mode {
-	case modeForm:
-		return "tab: field · ctrl+t: schedules · ctrl+b: build · enter: save · esc: cancel", "tab · ctrl+t pick · ctrl+b build · enter save"
-	case modeBuilder:
-		return "tab: next field · ←/→: change · space: toggle day · enter: use · esc: back", "tab · ←/→ change · space day · enter use"
-	case modePicker:
-		if m.pickSaving {
-			return "type a name · enter: save · esc: cancel", "enter save · esc"
-		}
-		return "↑/↓: move · enter: use · s: save current · d: delete template · esc: back", "↑/↓ · enter use · s save · d del · esc"
-	case modeRuns:
-		return "↑/↓: select · enter: view output · esc: back", "↑/↓ · enter view · esc back"
-	case modeOutput:
-		return "↑/↓: scroll · pgup/pgdn · esc: back", "↑/↓ scroll · esc back"
-	case modeConfirmDelete:
-		return "y: delete · n: cancel", "y: delete · n: cancel"
-	default:
-		return "↑/↓: select · a: add · e: edit · space: pause · enter: logs · d: delete · q: quit", "↑/↓ · a add · e edit · space pause · enter logs · d del · q quit"
+	chips := make([]string, len(keys))
+	plain := make([]string, len(keys))
+	for i, h := range keys {
+		chips[i] = renderChip(h)
+		plain[i] = h.key + " " + h.label
 	}
+
+	if line := strings.Join(chips, "  "); lipgloss.Width(line) <= w {
+		return line
+	}
+	if line := strings.Join(plain, " · "); lipgloss.Width(line) <= w {
+		return chipLabelStyle.Render(line)
+	}
+	for i, p := range plain {
+		plain[i] = chipLabelStyle.Render(trunc(p, w))
+	}
+	return strings.Join(plain, "\n")
 }
 
 func describe(expr string) string {

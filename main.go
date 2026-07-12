@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/MakarMolochaev/cronit/internal/banner"
 	"github.com/MakarMolochaev/cronit/internal/crontab"
 	"github.com/MakarMolochaev/cronit/internal/manager"
 	"github.com/MakarMolochaev/cronit/internal/storage"
@@ -31,7 +32,7 @@ func main() {
 	defer db.Close()
 
 	if len(arguments) == 0 {
-		if err := tui.Run(db); err != nil {
+		if err := tui.Run(db, version); err != nil {
 			panic("tui: " + err.Error())
 		}
 		return
@@ -88,5 +89,25 @@ func main() {
 		fmt.Printf("Cronit version: %s\n", version)
 	case "-v":
 		fmt.Printf("Cronit version: %s\n", version)
+	case "help", "-h", "--help":
+		printHelp()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", arguments[0])
+		printHelp()
+		os.Exit(2)
 	}
+}
+
+func printHelp() {
+	fmt.Println(banner.Render())
+	fmt.Print(`
+cronit — a TUI for managing cron jobs with run history
+
+Usage:
+  cronit                      launch the interactive TUI
+  cronit add <sched> <cmd>    add a job
+  cronit rm <id>              remove a job
+  cronit version              print version
+  cronit help                 show this help
+`)
 }
