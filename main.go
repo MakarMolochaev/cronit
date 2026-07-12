@@ -15,6 +15,12 @@ import (
 	"github.com/MakarMolochaev/cronit/internal/tui"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	arguments := os.Args[1:]
 
@@ -76,5 +82,11 @@ func main() {
 			panic("rm: " + err.Error())
 		}
 		fmt.Printf("removed job %s\n", arguments[1])
+	case "version":
+		fmt.Printf("Cronit version: %s\n", version)
+	case "--version":
+		fmt.Printf("Cronit version: %s\n", version)
+	case "-v":
+		fmt.Printf("Cronit version: %s\n", version)
 	}
 }
