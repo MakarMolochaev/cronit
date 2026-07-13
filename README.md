@@ -2,11 +2,13 @@
 
 # cronit
 
+<img src="assets/logo.svg" alt="cronit logo" width="380">
+
 **A beautiful terminal UI for managing cron jobs — with run history.**
 
-[![Release](https://img.shields.io/github/v/release/MakarMolochaev/cronit)](https://github.com/MakarMolochaev/cronit/releases)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/MakarMolochaev/cronit)](go.mod)
-[![License](https://img.shields.io/github/license/MakarMolochaev/cronit)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/MakarMolochaev/cronit?style=for-the-badge&color=%237670EB)](https://github.com/MakarMolochaev/cronit/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/MakarMolochaev/cronit?style=for-the-badge)](go.mod)
+[![License](https://img.shields.io/github/license/MakarMolochaev/cronit?style=for-the-badge)](LICENSE)
 
 </div>
 
