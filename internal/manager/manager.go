@@ -1,8 +1,11 @@
 package manager
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
 	"crypto/rand"
 	"encoding/base32"
@@ -66,6 +69,98 @@ func Remove(db *storage.Database, id string) error {
 	return db.DeleteJob(id)
 }
 
+type ImportResult struct {
+	Imported   int
+	BackupPath string
+}
+
+func Import(db *storage.Database, entries []crontab.ForeignEntry) (ImportResult, error) {
+	var res ImportResult
+	if len(entries) == 0 {
+		return res, errors.New("nothing to import")
+	}
+
+	current, err := crontab.Read()
+	if err != nil {
+		return res, err
+	}
+	lines := strings.Split(current, "\n")
+
+	remove := map[int]bool{}
+	for _, e := range entries {
+		if e.Err != "" {
+			return res, fmt.Errorf("cannot import %q: %s", strings.TrimSpace(e.Line), e.Err)
+		}
+		if err := validate(e.Schedule); err != nil {
+			return res, err
+		}
+		if e.LineNo < 0 || e.LineNo >= len(lines) || lines[e.LineNo] != e.Line {
+			return res, errors.New("crontab changed since it was read, reopen import")
+		}
+		remove[e.LineNo] = true
+		if e.CommentLine >= 0 {
+			remove[e.CommentLine] = true
+		}
+	}
+
+	backup, err := backupCrontab(current)
+	if err != nil {
+		return res, err
+	}
+	res.BackupPath = backup
+
+	self, err := os.Executable()
+	if err != nil {
+		return res, err
+	}
+
+	kept := make([]string, 0, len(lines))
+	for i, ln := range lines {
+		if !remove[i] {
+			kept = append(kept, ln)
+		}
+	}
+	for len(kept) > 0 && strings.TrimSpace(kept[len(kept)-1]) == "" {
+		kept = kept[:len(kept)-1]
+	}
+
+	var b strings.Builder
+	for _, ln := range kept {
+		b.WriteString(ln)
+		b.WriteByte('\n')
+	}
+	for _, e := range entries {
+		name := strings.TrimSpace(e.Name)
+		if name == "" {
+			name = RandomName()
+		}
+		id := newID()
+		if err := db.SaveJob(id, name, e.Schedule, e.Command); err != nil {
+			return res, err
+		}
+		line := fmt.Sprintf("%s start %s %q", self, id, e.Command)
+		b.WriteString(crontab.FormatJob(id, e.Schedule, escapePercent(line)))
+		res.Imported++
+	}
+
+	if err := crontab.Write(b.String()); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+func backupCrontab(content string) (string, error) {
+	dir, err := storage.DataDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "crontab-"+time.Now().Format("20060102-150405")+".bak")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func validate(sched string) error {
 	if _, err := schedule.Parse(sched); err != nil {
 		return fmt.Errorf("invalid schedule: %w", err)
@@ -85,7 +180,11 @@ func syncCrontab(id, sched, command string, enabled bool) error {
 		return err
 	}
 	line := fmt.Sprintf("%s start %s %q", self, id, command)
-	return crontab.AddJob(id, sched, line)
+	return crontab.AddJob(id, sched, escapePercent(line))
+}
+
+func escapePercent(s string) string {
+	return strings.ReplaceAll(s, "%", `\%`)
 }
 
 func newID() string {

@@ -26,6 +26,7 @@ const (
 	modeBuilder
 	modeRuns
 	modeOutput
+	modeImport
 )
 
 const (
@@ -89,6 +90,14 @@ type Model struct {
 	runOffset int
 	outScroll int
 
+	imports   []crontab.ForeignEntry
+	impSel    []bool
+	impCursor int
+	impOffset int
+	impErr    string
+	notice    string
+	foreignN  int
+
 	picker     []pickItem
 	pickCursor int
 	pickOffset int
@@ -114,6 +123,7 @@ type loadedMsg struct {
 	runs        []storage.Run
 	cronRunning bool
 	cronKnown   bool
+	foreign     int
 }
 
 type runsMsg []storage.Run
@@ -154,7 +164,11 @@ func (m Model) reloadAll() tea.Cmd {
 			runs, _ = db.RecentRuns(id, 3)
 		}
 		running, known := crontab.DaemonRunning()
-		return loadedMsg{jobs: jobs, runs: runs, cronRunning: running, cronKnown: known}
+		foreign := 0
+		if entries, err := crontab.ForeignEntries(); err == nil {
+			foreign = len(entries)
+		}
+		return loadedMsg{jobs: jobs, runs: runs, cronRunning: running, cronKnown: known, foreign: foreign}
 	}
 }
 
@@ -217,6 +231,9 @@ func (m Model) visibleRows() int {
 		if m.err != nil {
 			vis--
 		}
+		if m.notice != "" {
+			vis--
+		}
 		if vis < 3 {
 			vis = 3
 		}
@@ -254,6 +271,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runs = msg.runs
 		m.cronRunning = msg.cronRunning
 		m.cronKnown = msg.cronKnown
+		m.foreignN = msg.foreign
 		m.err = nil
 		m.clampCursor()
 		return m, nil
@@ -281,6 +299,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleRunsKey(msg)
 	case modeOutput:
 		return m.handleOutputKey(msg)
+	case modeImport:
+		return m.handleImportKey(msg)
 	case modeConfirmDelete:
 		switch msg.String() {
 		case "y":
@@ -296,9 +316,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	default:
+		m.notice = ""
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "i":
+			return m.openImport()
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -864,6 +887,9 @@ func (m Model) headerMeta(hb lipgloss.Style) string {
 			parts = append(parts, hb.Foreground(warnClr).Render("● cron off"))
 		}
 	}
+	if m.foreignN > 0 {
+		parts = append(parts, hb.Foreground(warnClr).Render(fmt.Sprintf("%d unmanaged", m.foreignN)))
+	}
 	if m.version != "" {
 		parts = append(parts, hb.Foreground(fgMuted).Render(m.version))
 	}
@@ -877,6 +903,9 @@ func (m Model) topSections(width int) []string {
 	}
 	if m.err != nil {
 		sections = append(sections, errorStyle.Render(trunc("error: "+m.err.Error(), width)))
+	}
+	if m.notice != "" {
+		sections = append(sections, okStyle.Render(trunc("✓ "+m.notice, width)))
 	}
 	return sections
 }
@@ -910,6 +939,8 @@ func (m Model) render() string {
 		return m.renderRunsScreen()
 	case modeOutput:
 		return m.renderOutputScreen()
+	case modeImport:
+		return m.renderImportScreen()
 	}
 
 	vis := m.visibleRows()
@@ -1325,8 +1356,14 @@ func (m Model) footerKeys() []keyHint {
 		return []keyHint{{"↑/↓", "scroll"}, {"pgup/dn", "page"}, {"esc", "back"}}
 	case modeConfirmDelete:
 		return []keyHint{{"y", "delete"}, {"n", "cancel"}}
+	case modeImport:
+		return []keyHint{{"↑/↓", "move"}, {"spc", "toggle"}, {"a", "all"}, {"enter", "import"}, {"esc", "back"}}
 	default:
-		return []keyHint{{"↑/↓", "select"}, {"a", "add"}, {"e", "edit"}, {"spc", "pause"}, {"enter", "logs"}, {"d", "delete"}, {"q", "quit"}}
+		keys := []keyHint{{"↑/↓", "select"}, {"a", "add"}, {"e", "edit"}, {"spc", "pause"}, {"enter", "logs"}, {"d", "delete"}}
+		if m.foreignN > 0 {
+			keys = append(keys, keyHint{"i", "import"})
+		}
+		return append(keys, keyHint{"q", "quit"})
 	}
 }
 

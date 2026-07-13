@@ -34,7 +34,7 @@ type Template struct {
 	Schedule string
 }
 
-func dbPath() (string, error) {
+func DataDir() (string, error) {
 	dir := os.Getenv("XDG_DATA_HOME")
 	if dir == "" {
 		home, err := os.UserHomeDir()
@@ -45,6 +45,14 @@ func dbPath() (string, error) {
 	}
 	dir = filepath.Join(dir, "cronit")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func dbPath() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "cronit.db"), nil

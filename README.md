@@ -25,6 +25,7 @@
 - **Schedule picker** — common presets plus your own saved templates
 - **Schedule builder** — compose a schedule step by step, no cron syntax required
 - **Pause / resume** — disable a job without deleting it or losing its history
+- **Crontab import** — adopt your existing cron entries with one keypress
 - **Human-readable schedules** — descriptions and upcoming run times for every job
 - **Named jobs** — give jobs names, or get a generated one like `brave-otter`
 - **Single static binary** — pure Go, no cgo, no runtime dependencies
@@ -90,6 +91,7 @@ Schedules accept standard five-field cron expressions as well as the `@yearly`, 
 | `space` | pause / resume job |
 | `enter` | view run history & output |
 | `d` | delete job |
+| `i` | import existing crontab entries |
 | `q` | quit |
 
 In the add/edit form:
@@ -114,6 +116,8 @@ In the add/edit form:
 When cron fires, `cronit start` executes the command through `sh -c`, passes stdout/stderr through untouched, and records the exit code, duration and captured output.
 
 Jobs, templates and run history live in a SQLite database at `~/.local/share/cronit/cronit.db` (respects `$XDG_DATA_HOME`). Pausing a job removes its crontab line but keeps the job and its history.
+
+Already have cron jobs? Press `i` to import them: the entries you select are rewritten as cronit-managed jobs, so they gain run history, pause/resume and everything else. Before touching anything, cronit saves a timestamped backup of your crontab to `~/.local/share/cronit/`. Entries it can't fully understand — and `MAILTO=`/`PATH=` lines — are left exactly as they were.
 
 Requires Linux or macOS with a cron daemon (cronie, vixie-cron, etc.).
 
