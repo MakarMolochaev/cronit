@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"time"
 
 	"github.com/MakarMolochaev/cronit/internal/banner"
@@ -22,7 +23,18 @@ var (
 	date    = "unknown"
 )
 
+func resolveVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
+
 func main() {
+	version = resolveVersion()
 	arguments := os.Args[1:]
 
 	db, err := storage.Open()

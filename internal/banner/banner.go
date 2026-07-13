@@ -7,13 +7,11 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-const Art = `
-                           _ __ 
-    ______________  ____  (_) /_
-   / ___/ ___/ __ \/ __ \/ / __/
+const Art = `                         _ __
+  ______________  ____  (_) /_
+ / ___/ ___/ __ \/ __ \/ / __/
 / /__/ /  / /_/ / / / / / /_
-\___/_/   \____/_/ /_/_/\__/
-`
+\___/_/   \____/_/ /_/_/\__/`
 
 type rgb struct{ r, g, b int }
 
@@ -64,13 +62,15 @@ func gradient(s string) string {
 		if li > 0 {
 			b.WriteByte('\n')
 		}
-		for i, r := range []rune(ln) {
+		runes := []rune(ln)
+		for i, r := range runes {
 			if r == ' ' {
 				b.WriteRune(r)
 				continue
 			}
 			b.WriteString(styleAt(i).Render(string(r)))
 		}
+		b.WriteString(strings.Repeat(" ", maxW-len(runes)))
 	}
 	return b.String()
 }
