@@ -794,7 +794,7 @@ func (m Model) dims() (panelW, rowW int) {
 	if panelW < 40 {
 		panelW = 40
 	}
-	rowW = panelW - 2
+	rowW = panelW - 4
 	return
 }
 
@@ -916,8 +916,8 @@ func (m Model) render() string {
 
 	if m.sideBySide() {
 		leftCW, rightCW := m.splitWidths()
-		left := labeledPanel(m.jobsTitle(vis), m.renderJobList(leftCW-2, vis), leftCW, true)
-		right := labeledPanel("details", m.renderDetails(rightCW-2), rightCW, false)
+		left := labeledPanel(m.jobsTitle(vis), m.renderJobList(leftCW-4, vis), leftCW, true)
+		right := labeledPanel("details", m.renderDetails(rightCW-4), rightCW, false)
 		body := lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 		out := append(m.topSections(m.width), body, m.footer())
 		return lipgloss.JoinVertical(lipgloss.Left, out...)
@@ -978,10 +978,10 @@ func (m Model) renderRunsList(rowW int) string {
 }
 
 func (m Model) renderRunsScreen() string {
-	panelW, _ := m.dims()
+	panelW, rowW := m.dims()
 	sections := []string{
 		m.header(panelW + 2),
-		labeledPanel(m.runsScreenTitle(), m.renderRunsList(panelW-2), panelW, true),
+		labeledPanel(m.runsScreenTitle(), m.renderRunsList(rowW), panelW, true),
 		m.footer(),
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)

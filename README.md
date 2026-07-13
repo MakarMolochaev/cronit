@@ -14,7 +14,7 @@
 
 `cronit` sits on top of your regular crontab and gives you a friendly TUI to create, edit, pause and inspect cron jobs — including the stdout/stderr, exit code and duration of every past run.
 
-<!-- demo gif goes here: record with `vhs` (https://github.com/charmbracelet/vhs) -->
+![cronit demo](assets/demo.gif)
 
 ## Features
 
@@ -74,7 +74,9 @@ cronit version
 cronit help
 ```
 
-Schedules accept standard five-field cron expressions as well as the `@yearly`, `@monthly`, `@weekly`, `@daily`, `@hourly` and `@reboot` shortcuts.
+Schedules accept standard five-field cron expressions as well as the `@yearly`, `@monthly`, `@weekly`, `@daily`, `@hourly` and `@reboot` shortcuts. Don't feel like writing cron syntax? Pick a preset or a saved template with `ctrl+t`, or build the schedule step by step with `ctrl+b`:
+
+![schedule picker](assets/picker.gif)
 
 ### Keys
 
