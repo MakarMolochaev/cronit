@@ -1,13 +1,13 @@
 <div align="center">
-<pre>
-                         _ __
-  ______________  ____  (_) /_
- / ___/ ___/ __ \/ __ \/ / __/
-/ /__/ /  / /_/ / / / / / /_
-\___/_/   \____/_/ /_/_/\__/
-</pre>
+
+# cronit
 
 **A beautiful terminal UI for managing cron jobs — with run history.**
+
+[![Release](https://img.shields.io/github/v/release/MakarMolochaev/cronit)](https://github.com/MakarMolochaev/cronit/releases)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/MakarMolochaev/cronit)](go.mod)
+[![License](https://img.shields.io/github/license/MakarMolochaev/cronit)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/MakarMolochaev/cronit)](https://goreportcard.com/report/github.com/MakarMolochaev/cronit)
 
 </div>
 
@@ -116,4 +116,4 @@ Requires Linux or macOS with a cron daemon (cronie, vixie-cron, etc.).
 
 ## License
 
-[Apache-2.0](LICENSE)
+[MIT](LICENSE)
